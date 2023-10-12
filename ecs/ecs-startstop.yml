@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  EcsStartSchedule:
+    Type: String
+    Default: cron(0 22 ? * SUN-THU *)
+
+  EcsStopSchedule:
+    Type: String
+    Default: cron(0 16 ? * MON-FRI *)
+
+  RunningCount:
+    Type: String
+    Default: 1
+
+Globals:
+  Function:
+    MemorySize: 128
+    Timeout: 60
+    Runtime: python3.9
+    Architectures:
+      - x86_64
+
+Resources:
+  EcsStartLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/lambda-func-ecs-start
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: !Sub lambda-func-ecs-start
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: CloudWatch Logs log groups is not encrypted by design.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - I3011
+
+  EcsStartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: lambda-func-ecs-start
+      CodeUri: src/
+      Handler: app.auto_start_ecs_handler
+      Role: !GetAtt EcsStartStopRole.Arn
+      Environment:
+        Variables:
+          RUNNING_COUNT: !Ref RunningCount
+      Tags:
+        Name: lambda-func-ecs-start
+        Application: ope
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Lambda functions should be deployed inside a VPC
+          - id: W92
+            reason: Lambda functions should define ReservcduoncurrentExecutions to reserve simultaneous executions
+
+  EcsStartEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: default
+      Name: !Sub event-rule-ecs-start
+      ScheduleExpression: !Ref EcsStartSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt EcsStartFunction.Arn
+          Id: "TargetFunction"
+
+  PermissionForEventsToInvokeECSStartLambda:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref EcsStartFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EcsStartEventsRule.Arn
+
+  EcsStopLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/lambda-func-ecs-stop
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: lambda-func-ecs-stop
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: CloudWatch Logs log groups is not encrypted by design.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - I3011
+
+  EcsStopFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: lambda-func-ecs-stop
+      CodeUri: src/
+      Handler: app.auto_stop_ecs_handler
+      Role: !GetAtt EcsStartStopRole.Arn
+      Tracing: Active
+      Tags:
+        Name: lambda-func-ecs-stop
+        Application: ope
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Lambda functions should be deployed inside a VPC
+          - id: W92
+            reason: Lambda functions should define ReservcduoncurrentExecutions to reserve simultaneous executions
+
+  EcsStopEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: default
+      Name: event-rule-ecs-stop
+      ScheduleExpression: !Ref EcsStopSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt EcsStopFunction.Arn
+          Id: "TargetFunction"
+
+  PermissionForEventsToInvokeECSStopLambda:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref EcsStopFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EcsStopEventsRule.Arn
+
+  EcsStartStopRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      MaxSessionDuration: 3600
+      Path: /
+      RoleName: iam-role-ecs-stop
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:Describe*
+                  - ecs:List*
+                  - ecs:UpdateService
+                Resource:
+                  - "*"
+      Tags:
+        - Key: Name
+          Value: iam-role-ecs-stop
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: Reduce security risks by limiting Actions
+          - id: W28
+            reason: Resource found with an explicit name, this disallows updates that require replacement of this resource
+
+Outputs:
+  EcsStartFunction:
+    Value: !GetAtt EcsStartFunction.Arn
+
+  EcsStopFunction:
+    Value: !GetAtt EcsStopFunction.Arn
+
+  EcsStartStopRole:
+    Value: !GetAtt EcsStartStopRole.Arn
